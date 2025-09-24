@@ -1,13 +1,12 @@
 const express = require('express');
 const { google } = require('googleapis');
-require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// --- Authentication Middleware (No changes here) ---
+// --- Authentication Middleware ---
 const isAuthenticated = (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -23,7 +22,7 @@ const isAuthenticated = (req, res, next) => {
 
 // --- API Endpoints ---
 
-// MODIFIED: Google Drive endpoint to fetch ALL files
+// Google Drive endpoint to fetch ALL files
 app.get('/api/drive/files', isAuthenticated, async (req, res) => {
     const drive = google.drive({ version: 'v3', auth: req.googleClient });
     let allFiles = [];
@@ -32,7 +31,7 @@ app.get('/api/drive/files', isAuthenticated, async (req, res) => {
     try {
         do {
             const response = await drive.files.list({
-                pageSize: 1000, // Fetch 1000 files per API call for efficiency
+                pageSize: 1000,
                 fields: 'nextPageToken, files(id, name)',
                 pageToken: pageToken || undefined,
             });
@@ -52,7 +51,7 @@ app.get('/api/drive/files', isAuthenticated, async (req, res) => {
     }
 });
 
-// --- Google Sheets Endpoints (No changes here) ---
+// Google Sheets - READ endpoint
 app.get('/api/sheets/read', isAuthenticated, async (req, res) => {
     const { spreadsheetId, range } = req.query;
     if (!spreadsheetId || !range) {
@@ -68,6 +67,7 @@ app.get('/api/sheets/read', isAuthenticated, async (req, res) => {
     }
 });
 
+// Google Sheets - WRITE (Append) endpoint
 app.post('/api/sheets/write', isAuthenticated, async (req, res) => {
     const { spreadsheetId, range, values } = req.body;
     if (!spreadsheetId || !range || !values) {
@@ -88,6 +88,7 @@ app.post('/api/sheets/write', isAuthenticated, async (req, res) => {
     }
 });
 
+// Google Sheets - UPDATE endpoint
 app.put('/api/sheets/update', isAuthenticated, async (req, res) => {
     const { spreadsheetId, range, values } = req.body;
     if (!spreadsheetId || !range || !values) {
@@ -108,6 +109,7 @@ app.put('/api/sheets/update', isAuthenticated, async (req, res) => {
     }
 });
 
+// Root endpoint for health checks
 app.get('/', (req, res) => {
     res.send('MCP API Server is running.');
 });
