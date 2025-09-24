@@ -3,14 +3,11 @@ const { google } = require('googleapis');
 require('dotenv').config();
 
 const app = express();
-// Render provides the PORT, so we don't need to hardcode it.
 const PORT = process.env.PORT || 3000;
 
-// Middleware to parse JSON bodies from POST/PUT requests
 app.use(express.json());
 
-// --- Authentication Middleware ---
-// This function checks for the access token sent by Typingmind in the header.
+// --- Authentication Middleware (No changes here) ---
 const isAuthenticated = (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -26,22 +23,36 @@ const isAuthenticated = (req, res, next) => {
 
 // --- API Endpoints ---
 
-// Google Drive endpoint
+// MODIFIED: Google Drive endpoint to fetch ALL files
 app.get('/api/drive/files', isAuthenticated, async (req, res) => {
     const drive = google.drive({ version: 'v3', auth: req.googleClient });
+    let allFiles = [];
+    let pageToken = null;
+
     try {
-        const response = await drive.files.list({
-            pageSize: 10,
-            fields: 'nextPageToken, files(id, name)',
-        });
-        res.json(response.data.files);
+        do {
+            const response = await drive.files.list({
+                pageSize: 1000, // Fetch 1000 files per API call for efficiency
+                fields: 'nextPageToken, files(id, name)',
+                pageToken: pageToken || undefined,
+            });
+
+            if (response.data.files) {
+                allFiles = allFiles.concat(response.data.files);
+            }
+            
+            pageToken = response.data.nextPageToken;
+        } while (pageToken);
+
+        res.json(allFiles);
+
     } catch (error) {
         console.error('The API returned an error: ', error.message);
         res.status(500).json({ error: 'Failed to retrieve files from Google Drive.' });
     }
 });
 
-// Google Sheets - READ endpoint
+// --- Google Sheets Endpoints (No changes here) ---
 app.get('/api/sheets/read', isAuthenticated, async (req, res) => {
     const { spreadsheetId, range } = req.query;
     if (!spreadsheetId || !range) {
@@ -57,7 +68,6 @@ app.get('/api/sheets/read', isAuthenticated, async (req, res) => {
     }
 });
 
-// Google Sheets - WRITE (Append) endpoint
 app.post('/api/sheets/write', isAuthenticated, async (req, res) => {
     const { spreadsheetId, range, values } = req.body;
     if (!spreadsheetId || !range || !values) {
@@ -78,7 +88,6 @@ app.post('/api/sheets/write', isAuthenticated, async (req, res) => {
     }
 });
 
-// Google Sheets - UPDATE endpoint
 app.put('/api/sheets/update', isAuthenticated, async (req, res) => {
     const { spreadsheetId, range, values } = req.body;
     if (!spreadsheetId || !range || !values) {
@@ -99,7 +108,6 @@ app.put('/api/sheets/update', isAuthenticated, async (req, res) => {
     }
 });
 
-// Root endpoint for health checks by Render
 app.get('/', (req, res) => {
     res.send('MCP API Server is running.');
 });
