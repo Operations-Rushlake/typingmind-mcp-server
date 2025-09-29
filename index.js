@@ -7,7 +7,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // This will be set in Render's environment, but defaults to localhost for testing
-const REDIRECT_URI = process.env.REDIRECT_URI || http://localhost:${PORT}/auth/google/callback;
+const REDIRECT_URI = process.env.REDIRECT_URI || `http://localhost:${PORT}/auth/google/callback`;
 
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
@@ -23,7 +23,7 @@ const SCOPES = [
 app.use(express.json());
 app.use(cookieSession({
     name: 'google-connector-session',
-    secret: process.env.SESSION_SECRET,
+    secret: process.env.SESSION_SECRET || 'default-secret-change-this',
     maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production' // secure cookies in production
@@ -37,7 +37,8 @@ const isAuthenticated = (req, res, next) => {
   // Create a new client for each request to ensure user isolation
   const client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET
+    process.env.GOOGLE_CLIENT_SECRET,
+    REDIRECT_URI
   );
   client.setCredentials(req.session.tokens);
   req.googleClient = client;
@@ -141,5 +142,5 @@ app.get('/', (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(Server listening on port ${PORT});
+    console.log(`Server listening on port ${PORT}`);
 });
