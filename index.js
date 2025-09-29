@@ -16,11 +16,23 @@ console.log('===================================');
 
 // Enable CORS
 app.use(cors({
-  origin: ['https://typingmind.com', 'https://www.typingmind.com', 'http://localhost:3000'],
+  origin: ['https://typingmind.com', 'https://www.typingmind.com', 'https://rushlake-media-gmbh-ai.typingcloud.com', 'http://localhost:3000'],
   credentials: true
 }));
 
+// IMPORTANT: Body parsing middleware must come before routes
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Debug middleware to log all requests
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  if (req.method === 'POST' || req.method === 'PUT') {
+    console.log('Request Headers:', req.headers);
+    console.log('Request Body:', JSON.stringify(req.body, null, 2));
+  }
+  next();
+});
 
 // Store tokens in memory
 const userTokens = new Map();
@@ -31,7 +43,6 @@ const REDIRECT_URI = process.env.REDIRECT_URI || `http://localhost:${PORT}/auth/
 if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
   console.error('FATAL ERROR: Missing Google OAuth credentials!');
   console.error('Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables');
-  // Don't crash the server, but log the error
 }
 
 // Create OAuth2 client with error handling
@@ -61,6 +72,8 @@ function generateAccessToken() {
 const isAuthenticated = (req, res, next) => {
   const authHeader = req.headers.authorization;
   
+  console.log('Auth check - Header present:', !!authHeader);
+  
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ 
       error: 'User not authenticated. Please connect your account via the plugin.',
@@ -69,9 +82,13 @@ const isAuthenticated = (req, res, next) => {
   }
 
   const token = authHeader.substring(7);
+  console.log('Auth check - Token:', token.substring(0, 10) + '...');
+  
   const googleTokens = userTokens.get(token);
+  console.log('Auth check - Token valid:', !!googleTokens);
   
   if (!googleTokens) {
+    console.log('Available tokens:', Array.from(userTokens.keys()).map(k => k.substring(0, 10) + '...'));
     return res.status(401).json({ 
       error: 'Invalid or expired token. Please reconnect your account.',
       authUrl: `${REDIRECT_URI.replace('/auth/google/callback', '')}/auth/google`
@@ -142,7 +159,7 @@ app.get('/auth/google/callback', async (req, res) => {
     
     // Store Google tokens associated with our access token
     userTokens.set(accessToken, tokens);
-    console.log('Token stored successfully');
+    console.log('Token stored successfully:', accessToken.substring(0, 10) + '...');
     
     // Return HTML that passes the token to TypingMind
     res.send(`
@@ -174,6 +191,7 @@ app.get('/auth/google/callback', async (req, res) => {
             margin: 20px 0;
             word-break: break-all;
             font-family: monospace;
+            user-select: all;
           }
           button {
             background-color: #4CAF50;
@@ -193,7 +211,7 @@ app.get('/auth/google/callback', async (req, res) => {
       <body>
         <div class="container">
           <h2>✅ Authentication Successful!</h2>
-          <p>Copy this token and paste it in TypingMind's OAuth configuration:</p>
+          <p>Copy this token and paste it in TypingMind's Request Headers:</p>
           <div class="token-box" id="token">${accessToken}</div>
           <button onclick="copyToken()">Copy Token</button>
           <p style="margin-top: 20px; color: #666;">After copying, you can close this window.</p>
@@ -232,6 +250,7 @@ app.get('/auth/google/callback', async (req, res) => {
 
 // Google Drive endpoint
 app.get('/api/drive/files', isAuthenticated, async (req, res) => {
+  console.log('Fetching Google Drive files...');
   const drive = google.drive({ version: 'v3', auth: req.googleClient });
   let allFiles = [];
   let pageToken = null;
@@ -249,9 +268,10 @@ app.get('/api/drive/files', isAuthenticated, async (req, res) => {
       pageToken = response.data.nextPageToken;
     } while (pageToken);
     
+    console.log(`Successfully retrieved ${allFiles.length} files`);
     res.json(allFiles);
   } catch (error) {
-    console.error('The API returned an error: ', error.message);
+    console.error('Drive API error:', error.message);
     res.status(500).json({ error: 'Failed to retrieve files from Google Drive.' });
   }
 });
@@ -259,6 +279,7 @@ app.get('/api/drive/files', isAuthenticated, async (req, res) => {
 // Google Sheets - READ endpoint
 app.get('/api/sheets/read', isAuthenticated, async (req, res) => {
   const { spreadsheetId, range } = req.query;
+  console.log('Read request - spreadsheetId:', spreadsheetId, 'range:', range);
   
   if (!spreadsheetId || !range) {
     return res.status(400).json({ error: 'Missing required parameters: spreadsheetId and range.' });
@@ -268,64 +289,147 @@ app.get('/api/sheets/read', isAuthenticated, async (req, res) => {
   
   try {
     const response = await sheets.spreadsheets.values.get({ spreadsheetId, range });
+    console.log('Successfully read data from sheet');
     res.json(response.data.values || []);
   } catch (error) {
-    console.error('The API returned an error: ', error.message);
+    console.error('Sheets API read error:', error.message);
     res.status(500).json({ error: 'Failed to retrieve data from Google Sheets.' });
   }
 });
 
-// Google Sheets - WRITE (Append) endpoint
+// Google Sheets - WRITE (Append) endpoint with enhanced debugging
 app.post('/api/sheets/write', isAuthenticated, async (req, res) => {
+  console.log('=== WRITE REQUEST DEBUG ===');
+  console.log('Content-Type:', req.headers['content-type']);
+  console.log('Raw Body:', req.body);
+  console.log('Body type:', typeof req.body);
+  console.log('Body keys:', Object.keys(req.body || {}));
+  
   const { spreadsheetId, range, values } = req.body;
   
+  console.log('Parsed values:');
+  console.log('- spreadsheetId:', spreadsheetId);
+  console.log('- range:', range);
+  console.log('- values:', JSON.stringify(values));
+  console.log('- values type:', typeof values);
+  console.log('- values is array:', Array.isArray(values));
+  
   if (!spreadsheetId || !range || !values) {
-    return res.status(400).json({ error: 'Missing required body parameters.' });
+    console.log('Missing params - spreadsheetId:', !!spreadsheetId, 'range:', !!range, 'values:', !!values);
+    return res.status(400).json({ 
+      error: 'Missing required body parameters.',
+      received: req.body,
+      expected: {
+        spreadsheetId: 'string',
+        range: 'string (e.g., "Sheet1!A1")',
+        values: '2D array (e.g., [["value1", "value2"]])'
+      }
+    });
+  }
+  
+  // Validate values is a 2D array
+  if (!Array.isArray(values) || (values.length > 0 && !Array.isArray(values[0]))) {
+    return res.status(400).json({ 
+      error: 'Values must be a 2D array',
+      received: values,
+      example: [["Row1Col1", "Row1Col2"], ["Row2Col1", "Row2Col2"]]
+    });
   }
   
   const sheets = google.sheets({ version: 'v4', auth: req.googleClient });
   
   try {
+    console.log('Sending to Google Sheets API...');
     const response = await sheets.spreadsheets.values.append({
       spreadsheetId,
       range,
       valueInputOption: 'USER_ENTERED',
       resource: { values }
     });
+    console.log('Successfully wrote data to sheet');
     res.json(response.data);
   } catch (error) {
-    console.error('The API returned an error: ', error.message);
-    res.status(500).json({ error: 'Failed to write data to Google Sheets.' });
+    console.error('Sheets API write error:', error.message);
+    console.error('Full error:', error);
+    res.status(500).json({ 
+      error: 'Failed to write data to Google Sheets.',
+      details: error.message
+    });
   }
 });
 
-// Google Sheets - UPDATE endpoint
+// Google Sheets - UPDATE endpoint with enhanced debugging
 app.put('/api/sheets/update', isAuthenticated, async (req, res) => {
+  console.log('=== UPDATE REQUEST DEBUG ===');
+  console.log('Content-Type:', req.headers['content-type']);
+  console.log('Raw Body:', req.body);
+  console.log('Body type:', typeof req.body);
+  console.log('Body keys:', Object.keys(req.body || {}));
+  
   const { spreadsheetId, range, values } = req.body;
   
+  console.log('Parsed values:');
+  console.log('- spreadsheetId:', spreadsheetId);
+  console.log('- range:', range);
+  console.log('- values:', JSON.stringify(values));
+  console.log('- values type:', typeof values);
+  console.log('- values is array:', Array.isArray(values));
+  
   if (!spreadsheetId || !range || !values) {
-    return res.status(400).json({ error: 'Missing required body parameters.' });
+    console.log('Missing params - spreadsheetId:', !!spreadsheetId, 'range:', !!range, 'values:', !!values);
+    return res.status(400).json({ 
+      error: 'Missing required body parameters.',
+      received: req.body,
+      expected: {
+        spreadsheetId: 'string',
+        range: 'string (e.g., "Sheet1!A1:B2")',
+        values: '2D array (e.g., [["value1", "value2"]])'
+      }
+    });
+  }
+  
+  // Validate values is a 2D array
+  if (!Array.isArray(values) || (values.length > 0 && !Array.isArray(values[0]))) {
+    return res.status(400).json({ 
+      error: 'Values must be a 2D array',
+      received: values,
+      example: [["Row1Col1", "Row1Col2"], ["Row2Col1", "Row2Col2"]]
+    });
   }
   
   const sheets = google.sheets({ version: 'v4', auth: req.googleClient });
   
   try {
+    console.log('Sending update to Google Sheets API...');
     const response = await sheets.spreadsheets.values.update({
       spreadsheetId,
       range,
       valueInputOption: 'USER_ENTERED',
       resource: { values }
     });
+    console.log('Successfully updated data in sheet');
     res.json(response.data);
   } catch (error) {
-    console.error('The API returned an error: ', error.message);
-    res.status(500).json({ error: 'Failed to update data in Google Sheets.' });
+    console.error('Sheets API update error:', error.message);
+    console.error('Full error:', error);
+    res.status(500).json({ 
+      error: 'Failed to update data in Google Sheets.',
+      details: error.message
+    });
   }
 });
 
 // Test endpoint
 app.get('/api/test', isAuthenticated, (req, res) => {
-  res.json({ message: 'Authentication successful! You can now use Google Sheets and Drive.' });
+  res.json({ 
+    message: 'Authentication successful! You can now use Google Sheets and Drive.',
+    availableEndpoints: [
+      'GET /api/drive/files',
+      'GET /api/sheets/read?spreadsheetId=xxx&range=A1:B2',
+      'POST /api/sheets/write',
+      'PUT /api/sheets/update'
+    ]
+  });
 });
 
 // Root endpoint
@@ -337,7 +441,8 @@ app.get('/', (req, res) => {
       client_id: !!process.env.GOOGLE_CLIENT_ID,
       client_secret: !!process.env.GOOGLE_CLIENT_SECRET,
       redirect_uri: REDIRECT_URI
-    }
+    },
+    active_tokens: userTokens.size
   };
   
   res.send(`
@@ -347,9 +452,24 @@ app.get('/', (req, res) => {
     <p>Client ID: ${status.environment.client_id ? '✓' : '✗'}</p>
     <p>Client Secret: ${status.environment.client_secret ? '✓' : '✗'}</p>
     <p>Redirect URI: ${status.environment.redirect_uri}</p>
+    <p>Active tokens: ${status.active_tokens}</p>
     <br>
-    <a href="/auth/google">Start Authentication</a>
+    <a href="/auth/google" style="padding: 10px 20px; background: #4285f4; color: white; text-decoration: none; border-radius: 4px;">
+      Start Authentication
+    </a>
   `);
+});
+
+// 404 handler
+app.use((req, res) => {
+  console.log('404 - Not found:', req.method, req.path);
+  res.status(404).json({ error: 'Endpoint not found' });
+});
+
+// Error handler
+app.use((err, req, res, next) => {
+  console.error('Server error:', err);
+  res.status(500).json({ error: 'Internal server error', message: err.message });
 });
 
 app.listen(PORT, () => {
