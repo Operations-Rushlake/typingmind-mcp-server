@@ -1,12 +1,20 @@
 const express = require('express');
 const { google } = require('googleapis');
-const cors = require('cors'); // You'll need to install this
+const cors = require('cors');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Enable CORS for TypingMind
+// Debug environment variables
+console.log('=== Environment Variables Check ===');
+console.log('GOOGLE_CLIENT_ID:', process.env.GOOGLE_CLIENT_ID ? 'Set ✓' : 'Missing ✗');
+console.log('GOOGLE_CLIENT_SECRET:', process.env.GOOGLE_CLIENT_SECRET ? 'Set ✓' : 'Missing ✗');
+console.log('SESSION_SECRET:', process.env.SESSION_SECRET ? 'Set ✓' : 'Missing ✗');
+console.log('REDIRECT_URI:', process.env.REDIRECT_URI || 'Using default');
+console.log('===================================');
+
+// Enable CORS
 app.use(cors({
   origin: ['https://typingmind.com', 'https://www.typingmind.com', 'http://localhost:3000'],
   credentials: true
@@ -14,23 +22,37 @@ app.use(cors({
 
 app.use(express.json());
 
-// Store tokens in memory (for production, use a database)
+// Store tokens in memory
 const userTokens = new Map();
 
 const REDIRECT_URI = process.env.REDIRECT_URI || `http://localhost:${PORT}/auth/google/callback`;
 
-const oauth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  REDIRECT_URI
-);
+// Check if credentials exist before creating OAuth client
+if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+  console.error('FATAL ERROR: Missing Google OAuth credentials!');
+  console.error('Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables');
+  // Don't crash the server, but log the error
+}
+
+// Create OAuth2 client with error handling
+let oauth2Client;
+try {
+  oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID || 'missing-client-id',
+    process.env.GOOGLE_CLIENT_SECRET || 'missing-client-secret',
+    REDIRECT_URI
+  );
+  console.log('OAuth2 client created successfully');
+} catch (error) {
+  console.error('Error creating OAuth2 client:', error);
+}
 
 const SCOPES = [
   'https://www.googleapis.com/auth/drive.readonly',
   'https://www.googleapis.com/auth/spreadsheets'
 ];
 
-// Generate a simple token (in production, use proper JWT)
+// Generate a simple token
 function generateAccessToken() {
   return Math.random().toString(36).substring(2) + Date.now().toString(36);
 }
@@ -42,17 +64,17 @@ const isAuthenticated = (req, res, next) => {
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ 
       error: 'User not authenticated. Please connect your account via the plugin.',
-      authUrl: `${process.env.REDIRECT_URI?.replace('/auth/google/callback', '')}/auth/google` || `http://localhost:${PORT}/auth/google`
+      authUrl: `${REDIRECT_URI.replace('/auth/google/callback', '')}/auth/google`
     });
   }
 
-  const token = authHeader.substring(7); // Remove 'Bearer ' prefix
+  const token = authHeader.substring(7);
   const googleTokens = userTokens.get(token);
   
   if (!googleTokens) {
     return res.status(401).json({ 
       error: 'Invalid or expired token. Please reconnect your account.',
-      authUrl: `${process.env.REDIRECT_URI?.replace('/auth/google/callback', '')}/auth/google` || `http://localhost:${PORT}/auth/google`
+      authUrl: `${REDIRECT_URI.replace('/auth/google/callback', '')}/auth/google`
     });
   }
 
@@ -69,23 +91,50 @@ const isAuthenticated = (req, res, next) => {
 
 // OAuth Routes
 app.get('/auth/google', (req, res) => {
-  // Store state to identify user (in production, use proper state management)
+  console.log('Starting OAuth flow...');
+  
+  if (!oauth2Client) {
+    return res.status(500).send('OAuth client not configured. Check server logs.');
+  }
+  
   const state = generateAccessToken();
   
-  const authUrl = oauth2Client.generateAuthUrl({
-    access_type: 'offline',
-    scope: SCOPES,
-    prompt: 'consent',
-    state: state
-  });
-  
-  res.redirect(authUrl);
+  try {
+    const authUrl = oauth2Client.generateAuthUrl({
+      access_type: 'offline',
+      scope: SCOPES,
+      prompt: 'consent',
+      state: state
+    });
+    
+    console.log('Redirecting to Google OAuth...');
+    res.redirect(authUrl);
+  } catch (error) {
+    console.error('Error generating auth URL:', error);
+    res.status(500).send('Error starting authentication');
+  }
 });
 
 app.get('/auth/google/callback', async (req, res) => {
-  const { code, state } = req.query;
+  console.log('OAuth callback received');
+  const { code, state, error } = req.query;
+  
+  if (error) {
+    console.error('OAuth error:', error);
+    return res.status(400).send(`Authentication error: ${error}`);
+  }
+  
+  if (!code) {
+    return res.status(400).send('No authorization code received');
+  }
+  
+  if (!oauth2Client) {
+    console.error('OAuth client not initialized');
+    return res.status(500).send('Server configuration error');
+  }
   
   try {
+    console.log('Exchanging code for tokens...');
     const { tokens } = await oauth2Client.getToken(code);
     
     // Generate a simple access token for TypingMind to use
@@ -93,6 +142,7 @@ app.get('/auth/google/callback', async (req, res) => {
     
     // Store Google tokens associated with our access token
     userTokens.set(accessToken, tokens);
+    console.log('Token stored successfully');
     
     // Return HTML that passes the token to TypingMind
     res.send(`
@@ -158,20 +208,13 @@ app.get('/auth/google/callback', async (req, res) => {
               console.error('Could not copy text: ', err);
             });
           }
-          
-          // Try to communicate with parent window (TypingMind)
-          if (window.opener) {
-            window.opener.postMessage({ 
-              type: 'oauth-success', 
-              token: '${accessToken}' 
-            }, '*');
-          }
         </script>
       </body>
       </html>
     `);
   } catch (error) {
-    console.error('Error retrieving access token', error);
+    console.error('Error retrieving access token:', error.message);
+    console.error('Full error:', error);
     res.status(500).send(`
       <!DOCTYPE html>
       <html>
@@ -185,7 +228,7 @@ app.get('/auth/google/callback', async (req, res) => {
   }
 });
 
-// API Endpoints (same as before, but now using token auth)
+// API Endpoints
 
 // Google Drive endpoint
 app.get('/api/drive/files', isAuthenticated, async (req, res) => {
@@ -280,17 +323,40 @@ app.put('/api/sheets/update', isAuthenticated, async (req, res) => {
   }
 });
 
-// Test endpoint to check authentication
+// Test endpoint
 app.get('/api/test', isAuthenticated, (req, res) => {
   res.json({ message: 'Authentication successful! You can now use Google Sheets and Drive.' });
 });
 
-// Root endpoint for health checks
+// Root endpoint
 app.get('/', (req, res) => {
-  res.send('MCP API Server is running. Visit /auth/google to authenticate.');
+  const status = {
+    server: 'running',
+    oauth_configured: !!oauth2Client,
+    environment: {
+      client_id: !!process.env.GOOGLE_CLIENT_ID,
+      client_secret: !!process.env.GOOGLE_CLIENT_SECRET,
+      redirect_uri: REDIRECT_URI
+    }
+  };
+  
+  res.send(`
+    <h1>MCP API Server</h1>
+    <p>Server is running!</p>
+    <p>OAuth configured: ${status.oauth_configured ? '✓' : '✗'}</p>
+    <p>Client ID: ${status.environment.client_id ? '✓' : '✗'}</p>
+    <p>Client Secret: ${status.environment.client_secret ? '✓' : '✗'}</p>
+    <p>Redirect URI: ${status.environment.redirect_uri}</p>
+    <br>
+    <a href="/auth/google">Start Authentication</a>
+  `);
 });
 
 app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
   console.log(`Visit http://localhost:${PORT}/auth/google to authenticate`);
+  
+  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+    console.error('WARNING: Google OAuth credentials are not configured!');
+  }
 });
